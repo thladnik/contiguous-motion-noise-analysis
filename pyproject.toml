@@ -3,41 +3,41 @@ requires      = ["setuptools>=65.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cmn_analysis"
-version = "0.1.0"
-description = "Analysis routines for the contiguous motion noise (CMN) stimulus"
+name = "cmn-analysis"
+version = "0.2.0"
+description = "Motion receptive fields from contiguous motion noise (CMN) recordings by reverse correlation"
 readme = "README.md"
 authors = [{ name = 'Tim Hladnik', email = "contact@vxpy.org" }]
 license = { file = 'LICENSE' }
 classifiers = [
         'Development Status :: 3 - Alpha',
         'Intended Audience :: Science/Research',
-        'License :: OSI Approved :: GNU General Public License v3 (GPLv3)',
+        'License :: OSI Approved :: MIT License',
         'Operating System :: POSIX :: Linux',
         'Operating System :: Microsoft :: Windows',
-        'Operating System :: Microsoft :: Windows :: Windows 10',
-        'Operating System :: Microsoft :: Windows :: Windows 11',
         'Programming Language :: Python',
         'Programming Language :: Python :: 3.10',
         'Programming Language :: Python :: 3.11',
+        'Programming Language :: Python :: 3.12',
         'Topic :: Scientific/Engineering'
 ]
-keywords = ['neuroscience', 'experiment', 'data analysis']
+keywords = ['neuroscience', 'receptive field', 'reverse correlation', 'data analysis']
 dependencies = [
-    'caload @ git+https://github.com/thladnik/caload',
-    'numpy',
-    'scipy',
-    'torch',
-    'pandas'
+    'numpy>=1.26',
+    'scipy>=1.11',
+    'h5py>=3.8',
 ]
 requires-python = ">=3.10"
+
+[project.optional-dependencies]
+dev = ['pytest>=8', 'build']
+
+[project.urls]
+Homepage = 'https://github.com/thladnik/contiguous-motion-noise-analysis'
 
 [tool.setuptools.packages.find]
 where = ['.']
 include = ['cmn_analysis*']
 
-[project.optional-dependencies]
-dev = ['pip-tools', 'pytest', 'build', 'twine']
-
-[project.urls]
-Homepage = 'https://github.com/thladnik/contiguous-motion-noise-analysis'
+[tool.pytest.ini_options]
+testpaths = ['tests']
