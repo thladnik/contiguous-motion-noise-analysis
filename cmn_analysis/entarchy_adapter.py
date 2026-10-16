@@ -5,7 +5,11 @@ names wherever the meaning is unchanged, so the existing plotting and postproces
 working::
 
     recordings.map_async(adapter.process_recording, sample_rate=10)
-    rois.map_async(adapter.run_cmn_analysis)          # needs roi['dff_resampled']
+    rois.map_async(adapter.run_cmn_analysis)          # needs roi['dff']
+
+``run_cmn_analysis`` works on ``roi['dff_resampled']``, dF/F on the recording's
+``time_resampled`` grid (``rec['sample_rate']``). If it does not exist yet it is computed from
+``roi['dff']`` and stored, see :func:`resample_dff`.
 
 Both stimuli are handled. In a vxPy 0.1 recording the original visual leaves
 ``display/<Visual>/motion_vectors_0`` on the recording plus ``frame_index`` on each phase; the
@@ -13,7 +17,7 @@ realtime visual leaves ``motion_vectors`` on each phase instead.
 
 Only the entity access that the existing pipeline already uses is relied on: ``entity[key]``,
 ``rec.phases``, ``rec.layers``, ``rec.rois``, ``rec.animal``, ``rec.sole_imaging()``,
-``roi.recording`` and ``roi.layer``.
+``roi.recording``, ``roi.layer`` and ``roi.imaging``.
 """
 from collections import OrderedDict
 
@@ -109,6 +113,46 @@ def process_recording(rec, sample_rate: float = 10., radial_bin_num: int = 16):
     rec['egomotion_axes_opts'] = geometry.icosphere_axes(3)
 
 
+def imaging_times(roi) -> np.ndarray:
+    """Frame times [s] of the ROI's traces: ``roi.imaging['frame_times']``, or the recording's
+    sole imaging source when the ROI has no imaging link."""
+    imaging = getattr(roi, 'imaging', None)
+    if imaging is None:
+        imaging = roi.recording.sole_imaging()
+    return np.asarray(imaging['frame_times'], dtype=np.float64).reshape(-1)
+
+
+def resample_dff(roi, kind: str = 'linear') -> np.ndarray:
+    """``roi['dff_resampled']``: ``roi['dff']`` interpolated from its frame times onto the
+    recording's ``time_resampled`` grid (``process_recording``, ``rec['sample_rate']``).
+
+    ``kind='linear'`` interpolates linearly; ``'nearest'`` takes the nearest frame, as the
+    original pipeline did. The stimulus is sampled with the layer's ``t_offset`` in
+    :func:`process_recording`, so the trace itself is not shifted here.
+    """
+    dff = _get(roi, 'dff')
+    if dff is None:
+        raise KeyError(f"{roi}: no 'dff' to resample")
+    dff = np.asarray(dff, dtype=np.float64).reshape(-1)
+    frame_times = imaging_times(roi)
+    if len(frame_times) != len(dff):
+        raise ValueError(f'{roi}: {len(dff)} dF/F samples but {len(frame_times)} frame times')
+    time_resampled = np.asarray(roi.recording['time_resampled'], dtype=np.float64)
+
+    if kind == 'linear':
+        resampled = np.interp(time_resampled, frame_times, dff)
+    elif kind == 'nearest':
+        right = np.clip(np.searchsorted(frame_times, time_resampled), 1, len(frame_times) - 1)
+        left = right - 1
+        nearest = np.where(time_resampled - frame_times[left] <= frame_times[right] - time_resampled, left, right)
+        resampled = dff[nearest]
+    else:
+        raise ValueError(f"kind must be 'linear' or 'nearest', not {kind!r}")
+
+    roi['dff_resampled'] = resampled
+    return resampled
+
+
 # The binned stimulus is identical for all ROIs of a layer; keep the last few per worker process
 _binned_cache: 'OrderedDict' = OrderedDict()
 
@@ -131,12 +175,15 @@ def run_cmn_analysis(roi, event_mode: str = 'derivative', lag_seconds: float = 0
                      bootstrap_num: int = 1000, bernoulli_alpha: float = 0.05,
                      cluster_alpha: float = 0.05, sign_radial_bin_threshold: int = 1,
                      cluster_stat: str = 'mass', seed: int = 0, save_debug_data: bool = False):
-    """Receptive field and egomotion fit of one ROI. ``event_mode='binary'`` and
-    ``cluster_stat='count'`` reproduce the criteria of the original pipeline."""
+    """Receptive field and egomotion fit of one ROI, from ``roi['dff_resampled']`` (computed
+    from ``roi['dff']`` if missing). ``event_mode='binary'`` and ``cluster_stat='count'``
+    reproduce the criteria of the original pipeline."""
     rec, layer = roi.recording, roi.layer
     sample_rate = rec['sample_rate']
     selection = layer['cmn_phase_selection']
-    dff = roi['dff_resampled']
+    dff = _get(roi, 'dff_resampled')
+    if dff is None:
+        dff = resample_dff(roi)
 
     weights = rf.event_weights(dff, sample_rate, selection, mode=event_mode)
     roi['signal_weights'] = weights

@@ -273,10 +273,27 @@ def fake_recording(shown, sphere, times):
         phase['motion_vectors'] = shown['field'][shown['frame_index']]
     grating = Entity({'display/__visual_name': 'TranslationGrating'})
 
-    rec.__dict__.update(id=1, phases=[grating, phase], layers=[Entity({'t_offset': 0.}, id=1)], rois=Rois(),
-                        animal=Entity({'ants/init_x_rotation': 10.}), imaging=[0],
-                        sole_imaging=lambda: {'frame_times': times})
+    imaging = Entity({'frame_times': times})
+    rec.__dict__.update(id=1, phases=[grating, phase], layers=[Entity({'t_offset': 0.}, id=1, imaging=imaging)],
+                        rois=Rois(), animal=Entity({'ants/init_x_rotation': 10.}), imaging=[imaging],
+                        sole_imaging=lambda: imaging)
     return rec
+
+
+def test_resample_dff_interpolates_onto_the_recording_grid():
+    imaging = Entity({'frame_times': np.array([0., 1., 2., 3.])})
+    rec = Entity({'time_resampled': np.array([0., 0.4, 0.6, 1.5, 2.9, 3.])}, sole_imaging=lambda: imaging)
+    roi = Entity({'dff': np.array([0., 10., 20., 30.])}, recording=rec, imaging=imaging)
+
+    linear = entarchy_adapter.resample_dff(roi)
+    assert np.allclose(linear, [0., 4., 6., 15., 29., 30.])
+    assert np.array_equal(roi['dff_resampled'], linear)
+
+    nearest = entarchy_adapter.resample_dff(roi, kind='nearest')
+    assert nearest.tolist() == [0., 0., 10., 10., 30., 30.]   # a tie takes the earlier frame, as scipy's interp1d
+
+    with pytest.raises(KeyError):
+        entarchy_adapter.resample_dff(Entity({}, recording=rec, imaging=imaging))
 
 
 def test_adapter_runs_on_both_recording_styles(shown, sphere, mapped):
@@ -292,10 +309,10 @@ def test_adapter_runs_on_both_recording_styles(shown, sphere, mapped):
     assert layer['cmn_motion_vectors_3d'].shape == (layer['cmn_phase_selection'].sum(), 320, 3)
     assert layer['cmn_motion_vectors_3d'].dtype == np.float32
 
-    resampled = np.interp(rec['time_resampled'], times, dff)
-    roi = Entity({'dff_resampled': resampled}, recording=rec, layer=layer)
+    roi = Entity({'dff': dff}, recording=rec, layer=layer, imaging=rec.imaging[0])
     entarchy_adapter.run_cmn_analysis(roi, bootstrap_num=300)
 
+    assert roi['dff_resampled'].shape == rec['time_resampled'].shape   # resampled on the fly
     assert roi['has_receptive_field']
     found = np.zeros(320, dtype=bool)
     found[roi['significant_patch_indices']] = True
