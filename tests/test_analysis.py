@@ -292,8 +292,46 @@ def test_resample_dff_interpolates_onto_the_recording_grid():
     nearest = entarchy_adapter.resample_dff(roi, kind='nearest')
     assert nearest.tolist() == [0., 0., 10., 10., 30., 30.]   # a tie takes the earlier frame, as scipy's interp1d
 
-    with pytest.raises(KeyError):
+    with pytest.raises(KeyError):   # neither dff nor fluorescence
         entarchy_adapter.resample_dff(Entity({}, recording=rec, imaging=imaging))
+
+
+def test_rolling_baseline_matches_the_original_loop():
+    rng = np.random.default_rng(4)
+    fluorescence = 100 + 20 * rng.random(700) + 50 * (rng.random(700) < 0.05)
+    window_size, percentile = 61, 10
+
+    half = (window_size - 1) // 2
+    padded = np.pad(fluorescence, half, mode='empty')
+    padded[:half] = np.median(fluorescence[:half])
+    padded[-half:] = np.median(fluorescence[-half:])
+    expected = np.empty(len(fluorescence))
+    for i in range(len(fluorescence)):
+        window = padded[i:i + window_size]
+        expected[i] = np.mean(window[window < np.percentile(window, percentile)])
+
+    baseline = entarchy_adapter.rolling_baseline(fluorescence, window_size, percentile, chunk_size=100)
+    assert np.allclose(baseline, expected)
+    assert np.allclose(entarchy_adapter.rolling_baseline(fluorescence, window_size - 1, percentile), expected)
+
+
+def test_calculate_dff_uses_a_120s_window_at_the_imaging_rate():
+    rng = np.random.default_rng(5)
+    rate = 2.
+    fluorescence = 200 + 5 * rng.random(2000)
+    fluorescence[1000:1010] += 100                              # one transient
+    imaging = Entity({'frame_times': np.arange(2000) / rate})   # no 'rate': from the frame times
+    roi = Entity({'fluorescence': fluorescence}, imaging=imaging)
+
+    dff = entarchy_adapter.calculate_dff(roi)
+    assert np.array_equal(roi['dff'], dff)
+    assert entarchy_adapter.imaging_rate(roi) == pytest.approx(rate)
+    baseline = entarchy_adapter.rolling_baseline(fluorescence, 240, 10.)
+    assert np.allclose(dff, (fluorescence - baseline) / baseline)
+    assert dff[1005] > 0.4 and abs(np.median(dff)) < 0.05
+
+    imaging['rate'] = 1.   # an explicit rate wins over the frame times
+    assert entarchy_adapter.imaging_rate(roi) == 1.
 
 
 def test_adapter_runs_on_both_recording_styles(shown, sphere, mapped):
@@ -309,10 +347,12 @@ def test_adapter_runs_on_both_recording_styles(shown, sphere, mapped):
     assert layer['cmn_motion_vectors_3d'].shape == (layer['cmn_phase_selection'].sum(), 320, 3)
     assert layer['cmn_motion_vectors_3d'].dtype == np.float32
 
-    roi = Entity({'dff': dff}, recording=rec, layer=layer, imaging=rec.imaging[0])
+    fluorescence = 100. * (1 + 0.3 * dff)   # dF/F of 0.3 per unit of the simulated trace
+    roi = Entity({'fluorescence': fluorescence}, recording=rec, layer=layer, imaging=rec.imaging[0])
     entarchy_adapter.run_cmn_analysis(roi, bootstrap_num=300)
 
-    assert roi['dff_resampled'].shape == rec['time_resampled'].shape   # resampled on the fly
+    assert roi['dff'].shape == dff.shape                              # dF/F computed on the fly
+    assert roi['dff_resampled'].shape == rec['time_resampled'].shape   # and resampled
     assert roi['has_receptive_field']
     found = np.zeros(320, dtype=bool)
     found[roi['significant_patch_indices']] = True

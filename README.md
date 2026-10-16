@@ -35,7 +35,7 @@ pytest
 | `cmn_analysis.recording_files` | Reads a vxPy 0.1 recording folder directly: the stimulus from `Display.hdf5`, image times from the frame clock in `Io.hdf5`. |
 | `cmn_analysis.geometry` | Sphere geometry: local tangent frames, patch adjacency from the mesh, patch solid angles, egomotion flow templates. |
 | `cmn_analysis.rf` | The analysis: `event_weights`, `BinnedStimulus`, `map_rf`, `lag_profile`, `fit_egomotion`. |
-| `cmn_analysis.entarchy_adapter` | `process_recording`, `resample_dff` and `run_cmn_analysis` with the entry points and attribute names of the `entarchy_vxpy_suite2p` CMN pipeline. |
+| `cmn_analysis.entarchy_adapter` | `process_recording`, `calculate_dff`, `resample_dff` and `run_cmn_analysis` with the entry points and attribute names of the `entarchy_vxpy_suite2p` CMN pipeline. |
 
 ## Minimal example
 

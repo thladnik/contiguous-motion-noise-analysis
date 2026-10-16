@@ -175,16 +175,23 @@ names, so plotting and postprocessing keep working:
 from cmn_analysis import entarchy_adapter as adapter
 
 recordings.map_async(adapter.process_recording, sample_rate=10)
-rois.map_async(adapter.run_cmn_analysis)          # needs roi['dff']
+rois.map_async(adapter.run_cmn_analysis)          # needs roi['fluorescence']
 ```
 
 `process_recording` sets `rec['time_resampled']` and `rec['sample_rate']`. `run_cmn_analysis`
-works on `roi['dff_resampled']`, dF/F on that grid; if the ROI does not have it yet, it is
-interpolated from `roi['dff']` and the imaging frame times and stored on the ROI. To do that
-step on its own, or with nearest-frame instead of linear interpolation:
+works on `roi['dff_resampled']`, dF/F on that grid. Whatever an ROI is missing is computed on
+the way and stored on it:
+
+- `roi['dff']` from `roi['fluorescence']`: `(F - F0) / F0`, with `F0` the mean of the values
+  below the 10th percentile in a centred 120 s window (`calculate_dff`, the original criterion).
+- `roi['dff_resampled']` from `roi['dff']`: interpolated from the imaging frame times onto the
+  recording's grid (`resample_dff`; `kind='nearest'` reproduces the original pipeline).
+
+To run either step on its own, or with other parameters:
 
 ```python
-rois.map_async(adapter.resample_dff)                  # or kind='nearest', as the original pipeline
+rois.map_async(adapter.calculate_dff, window_size=120, percentile=10)
+rois.map_async(adapter.resample_dff, kind='nearest')
 ```
 
 ## Troubleshooting

@@ -8,8 +8,9 @@ working::
     rois.map_async(adapter.run_cmn_analysis)          # needs roi['dff']
 
 ``run_cmn_analysis`` works on ``roi['dff_resampled']``, dF/F on the recording's
-``time_resampled`` grid (``rec['sample_rate']``). If it does not exist yet it is computed from
-``roi['dff']`` and stored, see :func:`resample_dff`.
+``time_resampled`` grid (``rec['sample_rate']``). Missing traces are computed on the way and
+stored: ``roi['dff']`` from ``roi['fluorescence']`` (:func:`calculate_dff`, rolling percentile
+baseline) and ``roi['dff_resampled']`` from ``roi['dff']`` (:func:`resample_dff`).
 
 Both stimuli are handled. In a vxPy 0.1 recording the original visual leaves
 ``display/<Visual>/motion_vectors_0`` on the recording plus ``frame_index`` on each phase; the
@@ -19,6 +20,7 @@ Only the entity access that the existing pipeline already uses is relied on: ``e
 ``rec.phases``, ``rec.layers``, ``rec.rois``, ``rec.animal``, ``rec.sole_imaging()``,
 ``roi.recording``, ``roi.layer`` and ``roi.imaging``.
 """
+import warnings
 from collections import OrderedDict
 
 import numpy as np
@@ -122,9 +124,65 @@ def imaging_times(roi) -> np.ndarray:
     return np.asarray(imaging['frame_times'], dtype=np.float64).reshape(-1)
 
 
+def rolling_baseline(fluorescence: np.ndarray, window_size: int, percentile: float,
+                     chunk_size: int = 512) -> np.ndarray:
+    """Baseline per sample: the mean of the values below `percentile` of a centred window of
+    `window_size` samples (made odd). Edge windows are filled with the median of the first or
+    last half window. Windows are evaluated in chunks of `chunk_size`, so memory stays at
+    ``chunk_size * window_size`` whatever the trace length.
+
+    Where no value lies below the percentile (a perfectly flat window) the baseline is nan.
+    """
+    fluorescence = np.asarray(fluorescence, dtype=np.float64).reshape(-1)
+    window_size = int(window_size) + (int(window_size) % 2 == 0)
+    half = (window_size - 1) // 2
+
+    padded = np.pad(fluorescence, half, mode='empty')
+    padded[:half] = np.median(fluorescence[:half])
+    padded[len(padded) - half:] = np.median(fluorescence[len(fluorescence) - half:])
+    windows = np.lib.stride_tricks.sliding_window_view(padded, window_size)[:len(fluorescence)]
+
+    baseline = np.empty(len(fluorescence))
+    undefined = 0
+    for start in range(0, len(windows), chunk_size):
+        block = windows[start:start + chunk_size]
+        below = block < np.percentile(block, percentile, axis=1)[:, None]
+        counts = below.sum(axis=1)
+        undefined += int((counts == 0).sum())
+        with np.errstate(invalid='ignore'):
+            baseline[start:start + chunk_size] = (block * below).sum(axis=1) / counts
+
+    if undefined:
+        warnings.warn(f'baseline undefined (nan) for {undefined} of {len(fluorescence)} samples: no value '
+                      f'below the {percentile}th percentile of the window (flat trace)', RuntimeWarning)
+    return baseline
+
+
+def imaging_rate(roi) -> float:
+    """Frames per second of the ROI's traces: ``imaging['rate']`` or, failing that, the
+    median frame interval."""
+    imaging = getattr(roi, 'imaging', None)
+    rate = None if imaging is None else _get(imaging, 'rate')
+    return float(rate) if rate is not None else float(1. / np.median(np.diff(imaging_times(roi))))
+
+
+def calculate_dff(roi, window_size: float = 120., percentile: float = 10.) -> np.ndarray:
+    """``roi['dff']`` from ``roi['fluorescence']``: ``(F - F0) / F0`` with ``F0`` the rolling
+    baseline of :func:`rolling_baseline`, `window_size` in seconds at the imaging rate.
+    The criterion of the original pipeline (120 s window, 10th percentile)."""
+    fluorescence = _get(roi, 'fluorescence')
+    if fluorescence is None:
+        raise KeyError(f"{roi}: no 'fluorescence' to compute dF/F from")
+    baseline = rolling_baseline(fluorescence, round(window_size * imaging_rate(roi)), percentile)
+    dff = (np.asarray(fluorescence, dtype=np.float64).reshape(-1) - baseline) / baseline
+    roi['dff'] = dff
+    return dff
+
+
 def resample_dff(roi, kind: str = 'linear') -> np.ndarray:
-    """``roi['dff_resampled']``: ``roi['dff']`` interpolated from its frame times onto the
-    recording's ``time_resampled`` grid (``process_recording``, ``rec['sample_rate']``).
+    """``roi['dff_resampled']``: ``roi['dff']`` (computed by :func:`calculate_dff` if missing)
+    interpolated from its frame times onto the recording's ``time_resampled`` grid
+    (``process_recording``, ``rec['sample_rate']``).
 
     ``kind='linear'`` interpolates linearly; ``'nearest'`` takes the nearest frame, as the
     original pipeline did. The stimulus is sampled with the layer's ``t_offset`` in
@@ -132,7 +190,7 @@ def resample_dff(roi, kind: str = 'linear') -> np.ndarray:
     """
     dff = _get(roi, 'dff')
     if dff is None:
-        raise KeyError(f"{roi}: no 'dff' to resample")
+        dff = calculate_dff(roi)
     dff = np.asarray(dff, dtype=np.float64).reshape(-1)
     frame_times = imaging_times(roi)
     if len(frame_times) != len(dff):
@@ -176,7 +234,7 @@ def run_cmn_analysis(roi, event_mode: str = 'derivative', lag_seconds: float = 0
                      cluster_alpha: float = 0.05, sign_radial_bin_threshold: int = 1,
                      cluster_stat: str = 'mass', seed: int = 0, save_debug_data: bool = False):
     """Receptive field and egomotion fit of one ROI, from ``roi['dff_resampled']`` (computed
-    from ``roi['dff']`` if missing). ``event_mode='binary'`` and ``cluster_stat='count'``
+    from ``roi['dff']`` or ``roi['fluorescence']`` if missing). ``event_mode='binary'`` and ``cluster_stat='count'``
     reproduce the criteria of the original pipeline."""
     rec, layer = roi.recording, roi.layer
     sample_rate = rec['sample_rate']
